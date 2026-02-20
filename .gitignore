@@ -1,0 +1,22 @@
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+.env
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+.trae/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
