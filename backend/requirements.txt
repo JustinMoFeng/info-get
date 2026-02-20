@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+langchain
+langchain-community
+langchain-chroma
+chromadb
+pypdf
+beautifulsoup4
+python-multipart
+httpx
+pytest
+sentence-transformers
+langchain-huggingface
+openai
+langchain-openai
+python-dotenv
