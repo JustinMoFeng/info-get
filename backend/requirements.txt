@@ -14,3 +14,4 @@ langchain-huggingface
 openai
 langchain-openai
 python-dotenv
+sqlalchemy

@@ -1,18 +1,23 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
-from pydantic import BaseModel
+from sqlalchemy.orm import Session
 import shutil
 import os
 import uuid
+import logging
+
 from backend.app.rag.store import VectorStore
 from backend.app.ingestion.web_loader import WebLoader
 from backend.app.ingestion.file_loader import FileLoader
 from backend.app.chat.llm import LLMService
-from langchain_core.documents import Document
+from langchain_core.documents import Document as LangChainDocument
 from backend.app.core.config import AppSettings, get_settings, save_settings
+from backend.app.core.database import get_db
+from backend.app import models, schemas
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Simple in-memory dependency injection for now
 class ServiceContainer:
@@ -56,34 +61,59 @@ def update_settings(settings: AppSettings):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def reset_services():
-    global _services
-    _services.vector_store = None
-    _services.llm_service = None
-    print("Services reset")
+# Document Management
+@router.get("/documents", response_model=List[schemas.Document])
+def get_documents(db: Session = Depends(get_db)):
+    return db.query(models.Document).all()
 
-class IngestURLRequest(BaseModel):
-    url: str
+@router.delete("/documents/{doc_id}")
+def delete_document(doc_id: str, db: Session = Depends(get_db), svcs: ServiceContainer = Depends(get_services)):
+    db_doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Delete from DB
+    db.delete(db_doc)
+    db.commit()
+    
+    # Delete from VectorStore
+    if svcs.vector_store:
+        svcs.vector_store.delete_document(doc_id)
+        
+    return {"message": "Document deleted"}
 
-class ChatRequest(BaseModel):
-    message: str
-    history: List[dict] = []
-
+# Ingestion
 @router.post("/ingest/url")
-def ingest_url(request: IngestURLRequest, svcs: ServiceContainer = Depends(get_services)):
+def ingest_url(request: schemas.IngestURLRequest, db: Session = Depends(get_db), svcs: ServiceContainer = Depends(get_services)):
     try:
         loader = WebLoader()
         content = loader.load(request.url)
-        doc = Document(page_content=content, metadata={"source": request.url, "type": "url"})
+        
+        # Save to DB
+        db_doc = models.Document(name=request.url, source=request.url, type="url")
+        db.add(db_doc)
+        db.commit()
+        db.refresh(db_doc)
+        
+        # Save to VectorStore with metadata
+        doc = LangChainDocument(
+            page_content=content, 
+            metadata={
+                "source": request.url, 
+                "type": "url",
+                "doc_id": str(db_doc.id)
+            }
+        )
         if svcs.vector_store:
             svcs.vector_store.add_documents([doc])
-        return {"message": "URL ingested successfully", "length": len(content)}
+            
+        return {"message": "URL ingested successfully", "doc_id": db_doc.id, "length": len(content)}
     except Exception as e:
         print(f"Ingest URL error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/ingest/file")
-async def ingest_file(file: UploadFile = File(...), svcs: ServiceContainer = Depends(get_services)):
+async def ingest_file(file: UploadFile = File(...), db: Session = Depends(get_db), svcs: ServiceContainer = Depends(get_services)):
     file_ext = os.path.splitext(file.filename)[1].lower()
     temp_path = f"temp_{uuid.uuid4()}{file_ext}"
     try:
@@ -99,11 +129,25 @@ async def ingest_file(file: UploadFile = File(...), svcs: ServiceContainer = Dep
         else:
             raise HTTPException(status_code=400, detail="Unsupported file type")
             
-        doc = Document(page_content=content, metadata={"source": file.filename, "type": "file"})
+        # Save to DB
+        db_doc = models.Document(name=file.filename, source=file.filename, type="file")
+        db.add(db_doc)
+        db.commit()
+        db.refresh(db_doc)
+        
+        # Save to VectorStore
+        doc = LangChainDocument(
+            page_content=content, 
+            metadata={
+                "source": file.filename, 
+                "type": "file",
+                "doc_id": str(db_doc.id)
+            }
+        )
         if svcs.vector_store:
             svcs.vector_store.add_documents([doc])
             
-        return {"message": "File ingested successfully", "length": len(content)}
+        return {"message": "File ingested successfully", "doc_id": db_doc.id, "length": len(content)}
     except Exception as e:
         print(f"Ingest file error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -112,21 +156,32 @@ async def ingest_file(file: UploadFile = File(...), svcs: ServiceContainer = Dep
             os.remove(temp_path)
 
 @router.post("/chat")
-async def chat(request: ChatRequest, svcs: ServiceContainer = Depends(get_services)):
+async def chat(request: schemas.ChatRequest, svcs: ServiceContainer = Depends(get_services)):
     try:
         # Construct message history
         messages = []
-        # Add system prompt if needed
         messages.append({"role": "system", "content": "You are a helpful assistant for a personal knowledge base. Use the provided context to answer questions. ALWAYS answer in Chinese."})
         
-        # Add history
         for msg in request.history:
             messages.append(msg)
             
-        # Add current message with context
         context = ""
-        if svcs.vector_store:
-            docs = svcs.vector_store.similarity_search(request.message, k=3)
+        
+        # RAG Logic
+        rag_enabled = True
+        if request.rag_config and not request.rag_config.enabled:
+            rag_enabled = False
+            
+        if rag_enabled and svcs.vector_store:
+            filter_dict = None
+            if request.rag_config and request.rag_config.selected_doc_ids:
+                ids = request.rag_config.selected_doc_ids
+                if len(ids) == 1:
+                    filter_dict = {"doc_id": ids[0]}
+                else:
+                    filter_dict = {"doc_id": {"$in": ids}}
+                    
+            docs = svcs.vector_store.similarity_search(request.message, k=3, filter=filter_dict)
             if docs:
                 context = "\n\n".join([d.page_content for d in docs])
         
@@ -137,7 +192,6 @@ async def chat(request: ChatRequest, svcs: ServiceContainer = Depends(get_servic
             
         messages.append({"role": "user", "content": user_msg_content})
         
-        # Use streaming response
         return StreamingResponse(
             svcs.llm_service.stream_chat(messages),
             media_type="text/event-stream"

@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.endpoints import router as api_router
+from backend.app.core.database import engine, Base
+
+# Create tables
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Info-Get API")
 

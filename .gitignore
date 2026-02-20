@@ -30,7 +30,9 @@ frontend/.env.local
 
 # Database / Storage
 *.sqlite3
+*.db
 chroma_db/
+data/
 
 # Secrets
 config.json
