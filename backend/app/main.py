@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.api.endpoints import router as api_router
 from backend.app.core.database import engine, Base
+from backend.app.api.routers import chat, documents, ingest, settings, retrieval
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -16,7 +16,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(api_router, prefix="/api")
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
+app.include_router(ingest.router, prefix="/api/ingest", tags=["ingest"])
+app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
+app.include_router(retrieval.router, prefix="/api", tags=["retrieval"]) # Mounts /api/search
 
 @app.get("/")
 def read_root():

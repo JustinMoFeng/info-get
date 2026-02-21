@@ -37,7 +37,7 @@ This document consolidates all design aspects (v1 MVP + v2 Knowledge Management)
 2.  **API Layer**: `POST /api/ingest/{type}` receives request.
 3.  **Loader**: `FileLoader` or `WebLoader` extracts text.
 4.  **Database**: A new record is created in `documents` table (id, name, type, source).
-5.  **Vector Store**: Text is embedded and stored in ChromaDB with `doc_id` metadata.
+5.  **Chunking & Embedding**: Text is split into chunks (recursive character split). Each chunk is embedded and stored in ChromaDB with `doc_id` metadata.
 6.  **Response**: Success message returned to UI.
 
 ### 3.2 Chat Flow
@@ -64,7 +64,9 @@ This document consolidates all design aspects (v1 MVP + v2 Knowledge Management)
 
 ## 5. API Design (Backend Endpoints)
 
-### Chat & LLM
+Endpoints are organized by resource in `backend/app/api/routers/`.
+
+### Chat (`/api/chat`)
 - `POST /api/chat`: Send message and get streaming response.
     -   **Body**: 
         ```json
@@ -79,43 +81,45 @@ This document consolidates all design aspects (v1 MVP + v2 Knowledge Management)
         ```
     -   **Response**: `text/event-stream`
 
-### Ingestion
+### Ingestion (`/api/ingest`)
 - `POST /api/ingest/file`: Upload and ingest a file (Multipart form data).
+    -   **Process**: File -> Text -> Chunks -> Embeddings -> Vector Store.
 - `POST /api/ingest/url`: Ingest content from a URL.
     -   **Body**: `{"url": "https://..."}`
+    -   **Process**: URL -> Text -> Chunks -> Embeddings -> Vector Store.
 
-### Knowledge Management (New)
-- `GET /api/documents`: List all indexed documents.
-- `DELETE /api/documents/{id}`: Delete a document and its embeddings.
+### Documents (`/api/documents`)
+- `GET /api/documents`: List all indexed documents (metadata from SQLite).
+- `DELETE /api/documents/{id}`: Delete a document (from SQLite) and its chunks (from ChromaDB).
 
-### Settings
+### Settings (`/api/settings`)
 - `GET /api/settings`: Retrieve current system settings.
-- `POST /api/settings`: Update system settings (LLM keys, models).
+- `POST /api/settings`: Update system settings (LLM keys, models, RAG chunking).
+    -   **Configurable Parameters**:
+        -   `chunk_size` (int): Max characters per chunk (default 1000).
+        -   `chunk_overlap` (int): Overlap characters between chunks (default 200).
 
 ## 6. Frontend Design (UI/UX)
+-   **Main Layout**: Sidebar (Chat History + Knowledge Manager) + Main Chat Area.
+-   **Settings Modal**: Global configuration for LLM and RAG parameters (`chunk_size`, `chunk_overlap`).
+-   **Knowledge Manager Modal**: Upload files/URLs, view status, delete documents.
+-   **Chat Interface**: Real-time streaming response, markdown rendering.
 
-### Pages
-- **Single Page Application (SPA)**: `App.tsx` handles the entire view.
+The frontend is a Single Page Application (SPA) where different functional areas are implemented as Panels or Modals.
 
-### Components
-1.  **Sidebar / Settings Panel**:
-    -   **Settings Modal**: Configuration for OpenAI API Key, Model, Base URL.
-    -   **Knowledge Manager Modal** (New):
-        -   **Centralized Management**: Dedicated modal for all document operations.
-        -   **Multi-File Upload**: Concurrent non-blocking uploads with progress queue.
-        -   **Search**: Filter documents by name.
-        -   **Ingestion**: Supports File (PDF/MD/TXT) and URL sources.
-    -   **Sidebar**:
-        -   **Access Point**: Button to open Knowledge Manager.
-        -   **Context Summary**: Displays active/selected documents for the current chat session.
-2.  **Chat Interface**:
-    -   **Message List**: Displays conversation history with Markdown support.
-    -   **Input Area**:
-        -   **Text Input**: Multiline text area.
-        -   **RAG Controls** (New):
-            -   **Toggle Switch**: Enable/Disable Knowledge Search.
-            -   **Context Selector**: Dropdown to select specific documents.
-        -   **Send Button**: Triggers the chat request.
+### Pages (Panels)
+1.  **Main Chat Interface** (Core View)
+    -   **Function**: Primary interaction area.
+    -   **Components**: Message List (Markdown rendered), Input Box, RAG Toggle.
+2.  **Sidebar Panel** (Navigation/Context)
+    -   **Function**: Persistent side panel for navigation and context awareness.
+    -   **Components**: "Manage Documents" button, Active Context list.
+3.  **Knowledge Manager Modal** (Management Page)
+    -   **Function**: Full overlay for document operations.
+    -   **Components**: File Upload (Multi-file), URL Input, Document List (with Delete), Search Bar, Progress Indicators.
+4.  **Settings Modal** (Configuration Page)
+    -   **Function**: System configuration overlay.
+    -   **Components**: API Key input, Model selection, Base URL config.
 
 ## 7. Directory Structure
 ```
@@ -123,24 +127,29 @@ info-get/
 ├── backend/
 │   ├── app/
 │   │   ├── api/
-│   │   │   └── endpoints.py      # All API routes defined here
+│   │   │   ├── routers/          # New: Modular API routers
+│   │   │   │   ├── chat.py
+│   │   │   │   ├── documents.py
+│   │   │   │   ├── ingest.py
+│   │   │   │   └── settings.py
+│   │   │   └── deps.py           # Dependency injection
 │   │   ├── chat/
 │   │   │   └── llm.py            # LLM service logic
 │   │   ├── core/
 │   │   │   ├── config.py         # Settings management
-│   │   │   └── database.py       # SQLite connection (New)
+│   │   │   └── database.py       # SQLite connection
 │   │   ├── ingestion/
 │   │   │   ├── file_loader.py    # PDF/MD parsing
 │   │   │   └── web_loader.py     # URL parsing
-│   │   ├── models.py             # SQLAlchemy models (New)
+│   │   ├── models.py             # SQLAlchemy models
 │   │   ├── rag/
 │   │   │   └── store.py          # ChromaDB wrapper
-│   │   ├── schemas.py            # Pydantic models (New)
+│   │   ├── schemas.py            # Pydantic models
 │   │   └── main.py               # App entry point
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx               # Main UI logic
-│   │   ├── components/           # (Suggested refactor for v2)
+│   │   ├── App.tsx               # Main UI logic (All panels)
+│   │   ├── components/           # (Suggested refactor)
 │   │   │   ├── ChatInterface.tsx
 │   │   │   ├── KnowledgeManager.tsx
 │   │   │   └── SettingsModal.tsx

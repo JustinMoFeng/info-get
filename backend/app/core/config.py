@@ -10,6 +10,8 @@ class AppSettings(BaseModel):
     openai_base_url: Optional[str] = None
     openai_model: str = "gpt-3.5-turbo"
     embedding_model: str = "text-embedding-ada-002"
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
 
 class ConfigManager:
     _instance = None

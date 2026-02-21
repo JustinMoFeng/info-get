@@ -9,6 +9,8 @@ interface AppSettings {
   openai_base_url?: string
   openai_model: string
   embedding_model: string
+  chunk_size: number
+  chunk_overlap: number
 }
 
 interface Message {
@@ -43,7 +45,9 @@ function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [settings, setSettings] = useState<AppSettings>({
     openai_model: 'gpt-3.5-turbo',
-    embedding_model: 'text-embedding-ada-002'
+    embedding_model: 'text-embedding-ada-002',
+    chunk_size: 1000,
+    chunk_overlap: 200
   })
 
   // Knowledge Management State
@@ -319,6 +323,26 @@ function App() {
                     type="text" 
                     value={settings.embedding_model}
                     onChange={e => setSettings({...settings, embedding_model: e.target.value})}
+                    className="w-full border border-gray-300 bg-gray-50 p-3 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-sm"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Chunk Size</label>
+                  <input 
+                    type="number" 
+                    value={settings.chunk_size}
+                    onChange={e => setSettings({...settings, chunk_size: parseInt(e.target.value) || 1000})}
+                    className="w-full border border-gray-300 bg-gray-50 p-3 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Chunk Overlap</label>
+                  <input 
+                    type="number" 
+                    value={settings.chunk_overlap}
+                    onChange={e => setSettings({...settings, chunk_overlap: parseInt(e.target.value) || 200})}
                     className="w-full border border-gray-300 bg-gray-50 p-3 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-sm"
                   />
                 </div>
