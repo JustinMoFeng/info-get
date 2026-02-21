@@ -2,6 +2,10 @@ import json
 import os
 from pydantic import BaseModel
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 CONFIG_FILE = "config.json"
 
@@ -10,6 +14,8 @@ class AppSettings(BaseModel):
     openai_base_url: Optional[str] = None
     openai_model: str = "gpt-3.5-turbo"
     embedding_model: str = "text-embedding-ada-002"
+    embedding_api_key: Optional[str] = None
+    embedding_base_url: Optional[str] = None
     chunk_size: int = 1000
     chunk_overlap: int = 200
 

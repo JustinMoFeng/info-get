@@ -32,6 +32,7 @@ frontend/.env.local
 *.sqlite3
 *.db
 chroma_db/
+test_chroma_db/
 data/
 
 # Secrets

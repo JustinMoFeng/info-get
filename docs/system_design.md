@@ -1,9 +1,9 @@
 # Info-Get System Design (Comprehensive)
 
 ## 1. Overview
-**Info-Get** is a Personal Knowledge Base application leveraging RAG (Retrieval-Augmented Generation). It allows users to ingest local files and web URLs, manage their knowledge base, and interact with it via an AI-powered chat interface.
+**Info-Get** is a Personal Knowledge Base application leveraging Agentic RAG (Retrieval-Augmented Generation). It allows users to ingest local files and web URLs, manage their knowledge base, and interact with it via an AI-powered chat interface that remembers past conversations and user preferences.
 
-This document consolidates all design aspects (v1 MVP + v2 Knowledge Management) and reflects the current system state.
+This document consolidates all design aspects (v1 MVP + v2 Knowledge Management + v3 Memory & Agent) and reflects the current system state.
 
 ## 2. Architecture
 
@@ -11,24 +11,26 @@ This document consolidates all design aspects (v1 MVP + v2 Knowledge Management)
 - **Backend**: FastAPI (Python)
 - **Frontend**: React + Vite + TailwindCSS
 - **Database**: 
-  - **Metadata**: SQLite (via SQLAlchemy) - Stores document records and status.
-  - **Vector Store**: ChromaDB (Local persistence) - Stores text embeddings.
+  - **Relational**: SQLite (via SQLAlchemy) - Stores documents, chat history, messages, and global memory.
+  - **Vector Store**: ChromaDB (Local persistence) - Stores embeddings for documents, chat history, and memories.
 - **AI/LLM**: OpenAI / Compatible API (e.g., DeepSeek, Ollama).
-- **Orchestration**: LangChain.
+- **Orchestration**: LangChain / Custom Agent Loop.
 
 ### 2.2 System Modules
 1.  **Ingestion Module**:
     -   Handles file uploads (PDF, MD, TXT) and URL crawling.
     -   Extracts text, chunks it, and generates embeddings.
     -   Stores metadata in SQLite and embeddings in ChromaDB.
-2.  **Knowledge Management Module** (v2 Feature):
+2.  **Knowledge Management Module**:
     -   **Persistence**: Tracks all uploaded documents.
     -   **CRUD Operations**: List, Add (Multi-file support), Delete, Search documents.
-    -   **Sync**: Deleting a document removes it from both SQLite and ChromaDB.
-3.  **Chat Module (RAG Engine)**:
-    -   **Hybrid Search**: Supports "Pure LLM" (no context) and "RAG" (context-aware) modes.
-    -   **Context Control**: Allows users to select specific documents for context per message.
-    -   **Streaming**: Real-time token streaming via Server-Sent Events (SSE).
+3.  **Memory & Context Module** (v3 Feature):
+    -   **Chat Persistence**: Stores full chat history and metadata.
+    -   **Global Memory**: Stores user preferences and facts.
+    -   **Context Manager**: Manages sliding window context (recent 5 turns) + summaries + global memory.
+4.  **Agentic Chat Module**:
+    -   **Agent Loop**: AI autonomously selects tools (Search Docs, Search History, Read/Update Memory).
+    -   **Thinking Process**: Exposes AI's thought chain and tool usage to the frontend.
 
 ## 3. Data Flow
 
@@ -36,20 +38,29 @@ This document consolidates all design aspects (v1 MVP + v2 Knowledge Management)
 1.  **User Action**: Uploads file or submits URL via Frontend.
 2.  **API Layer**: `POST /api/ingest/{type}` receives request.
 3.  **Loader**: `FileLoader` or `WebLoader` extracts text.
-4.  **Database**: A new record is created in `documents` table (id, name, type, source).
-5.  **Chunking & Embedding**: Text is split into chunks (recursive character split). Each chunk is embedded and stored in ChromaDB with `doc_id` metadata.
-6.  **Response**: Success message returned to UI.
+4.  **Database**: Record created in `documents` table.
+5.  **Chunking & Embedding**: Text split -> Embedded -> Stored in ChromaDB (`documents` collection).
 
-### 3.2 Chat Flow
-1.  **User Action**: Sends message with RAG settings (Enabled/Disabled, Selected Docs).
-2.  **API Layer**: `POST /api/chat` receives `ChatRequest`.
-3.  **Retrieval Strategy**:
-    -   If `rag_enabled=False`: Skip retrieval.
-    -   If `rag_enabled=True`:
-        -   Query VectorStore.
-        -   Apply filter: `where={"doc_id": {"$in": selected_doc_ids}}` (if selection exists).
-4.  **LLM Execution**: Context + History + Query sent to LLM (AsyncStream).
-5.  **Response**: Streamed back to Frontend via SSE.
+### 3.2 Agentic Chat Flow
+1.  **User Action**: Sends message in a specific `chat_id`.
+2.  **API Layer**: `POST /api/chat` receives `ChatRequest` (current message + chat_id).
+3.  **Context Construction**:
+    -   Load `GlobalMemory`.
+    -   Load `Chat.summary` (for older context).
+    -   Load recent 5 rounds of `Messages`.
+4.  **Agent Execution**:
+    -   LLM receives context + user query.
+    -   LLM decides to call tools:
+        -   `search_documents`: Search knowledge base.
+        -   `search_chat_history`: Search past conversations.
+        -   `read_global_memory` / `update_global_memory`.
+    -   Tools execute and return results to LLM.
+5.  **Response Generation**: LLM generates final answer based on tool outputs.
+6.  **Streaming**: "Thoughts", "Tool Calls", and "Final Answer" are streamed to Frontend via SSE.
+7.  **Post-Processing**:
+    -   Save new message to `messages` table.
+    -   Async task: Update `Chat.summary` if needed.
+    -   Async task: Embed message and store in ChromaDB (`chats` collection).
 
 ## 4. Database Schema (SQLite)
 
@@ -62,64 +73,62 @@ This document consolidates all design aspects (v1 MVP + v2 Knowledge Management)
 | `type` | String | 'file' or 'url' |
 | `created_at` | DateTime | Upload timestamp |
 
-## 5. API Design (Backend Endpoints)
+### Table: `chats` (New)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Unique identifier |
+| `title` | String | Chat title (auto-generated) |
+| `summary` | Text | Summary of older messages |
+| `created_at` | DateTime | Creation timestamp |
+| `updated_at` | DateTime | Last activity timestamp |
 
-Endpoints are organized by resource in `backend/app/api/routers/`.
+### Table: `messages` (New)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Unique identifier |
+| `chat_id` | UUID (FK) | References `chats.id` |
+| `role` | String | 'user', 'assistant', 'system' |
+| `content` | Text | Message content |
+| `created_at` | DateTime | Timestamp |
+| `is_summarized`| Boolean | If included in chat summary |
 
-### Chat (`/api/chat`)
-- `POST /api/chat`: Send message and get streaming response.
-    -   **Body**: 
-        ```json
-        {
-          "message": "User query",
-          "history": [{"role": "user", "content": "..."}],
-          "rag_config": {
-            "enabled": true,
-            "selected_doc_ids": ["uuid-1", "uuid-2"]
-          }
-        }
-        ```
-    -   **Response**: `text/event-stream`
+### Table: `global_memory` (New)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | Integer (PK)| Single row ID |
+| `content` | Text | Global memory content |
+| `updated_at` | DateTime | Last update timestamp |
 
-### Ingestion (`/api/ingest`)
-- `POST /api/ingest/file`: Upload and ingest a file (Multipart form data).
-    -   **Process**: File -> Text -> Chunks -> Embeddings -> Vector Store.
-- `POST /api/ingest/url`: Ingest content from a URL.
-    -   **Body**: `{"url": "https://..."}`
-    -   **Process**: URL -> Text -> Chunks -> Embeddings -> Vector Store.
+## 5. API Design
 
-### Documents (`/api/documents`)
-- `GET /api/documents`: List all indexed documents (metadata from SQLite).
-- `DELETE /api/documents/{id}`: Delete a document (from SQLite) and its chunks (from ChromaDB).
+### Chat Management (`/api/chats`)
+- `GET /api/chats`: List chat sessions.
+- `POST /api/chats`: Create new chat.
+- `GET /api/chats/{id}/messages`: Get history for a chat.
+- `DELETE /api/chats/{id}`: Delete chat.
 
-### Settings (`/api/settings`)
-- `GET /api/settings`: Retrieve current system settings.
-- `POST /api/settings`: Update system settings (LLM keys, models, RAG chunking).
-    -   **Configurable Parameters**:
-        -   `chunk_size` (int): Max characters per chunk (default 1000).
-        -   `chunk_overlap` (int): Overlap characters between chunks (default 200).
+### Agent Interaction (`/api/chat`)
+- `POST /api/chat`: Send message.
+    -   **Body**: `{"message": "...", "chat_id": "..."}`
+    -   **Response**: SSE Stream (Events: `thought`, `tool`, `answer`).
+
+### Knowledge & Settings
+- Existing endpoints (`/api/ingest`, `/api/documents`, `/api/settings`) remain.
 
 ## 6. Frontend Design (UI/UX)
--   **Main Layout**: Sidebar (Chat History + Knowledge Manager) + Main Chat Area.
--   **Settings Modal**: Global configuration for LLM and RAG parameters (`chunk_size`, `chunk_overlap`).
--   **Knowledge Manager Modal**: Upload files/URLs, view status, delete documents.
--   **Chat Interface**: Real-time streaming response, markdown rendering.
 
-The frontend is a Single Page Application (SPA) where different functional areas are implemented as Panels or Modals.
+### 6.1 Layout & Navigation
+-   **Sidebar**:
+    -   **History List**: Scrollable list of past chats with search.
+    -   **Action Buttons**: "New Chat", "Import Files" (navigates to page), "Settings" (modal).
+-   **Pages**:
+    -   **Chat Interface**: Main conversation view.
+    -   **File Management**: Dedicated page for managing knowledge base.
 
-### Pages (Panels)
-1.  **Main Chat Interface** (Core View)
-    -   **Function**: Primary interaction area.
-    -   **Components**: Message List (Markdown rendered), Input Box, RAG Toggle.
-2.  **Sidebar Panel** (Navigation/Context)
-    -   **Function**: Persistent side panel for navigation and context awareness.
-    -   **Components**: "Manage Documents" button, Active Context list.
-3.  **Knowledge Manager Modal** (Management Page)
-    -   **Function**: Full overlay for document operations.
-    -   **Components**: File Upload (Multi-file), URL Input, Document List (with Delete), Search Bar, Progress Indicators.
-4.  **Settings Modal** (Configuration Page)
-    -   **Function**: System configuration overlay.
-    -   **Components**: API Key input, Model selection, Base URL config.
+### 6.2 Chat Interface Features
+-   **Thinking Process**: Collapsible section showing AI's thought chain and tool usage.
+-   **Context Selector**: Dropdown/Modal to select specific files for current context.
+-   **Instant Import**: Button near input to upload file immediately to knowledge base.
 
 ## 7. Directory Structure
 ```
@@ -127,32 +136,31 @@ info-get/
 ├── backend/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── routers/          # New: Modular API routers
-│   │   │   │   ├── chat.py
+│   │   │   ├── routers/
+│   │   │   │   ├── chat.py           # Updated: Agent logic
+│   │   │   │   ├── chats.py          # New: Chat history CRUD
 │   │   │   │   ├── documents.py
 │   │   │   │   ├── ingest.py
 │   │   │   │   └── settings.py
-│   │   │   └── deps.py           # Dependency injection
-│   │   ├── chat/
-│   │   │   └── llm.py            # LLM service logic
-│   │   ├── core/
-│   │   │   ├── config.py         # Settings management
-│   │   │   └── database.py       # SQLite connection
-│   │   ├── ingestion/
-│   │   │   ├── file_loader.py    # PDF/MD parsing
-│   │   │   └── web_loader.py     # URL parsing
-│   │   ├── models.py             # SQLAlchemy models
-│   │   ├── rag/
-│   │   │   └── store.py          # ChromaDB wrapper
-│   │   ├── schemas.py            # Pydantic models
-│   │   └── main.py               # App entry point
+│   │   ├── agent/                    # New: Agent & Tools
+│   │   │   ├── agent.py
+│   │   │   └── tools.py
+│   │   ├── models.py                 # Updated: New tables
+│   │   ├── schemas.py                # Updated: New Pydantic models
+│   │   └── ...
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx               # Main UI logic (All panels)
-│   │   ├── components/           # (Suggested refactor)
-│   │   │   ├── ChatInterface.tsx
-│   │   │   ├── KnowledgeManager.tsx
-│   │   │   └── SettingsModal.tsx
+│   │   ├── pages/                    # New: Route pages
+│   │   │   ├── ChatPage.tsx
+│   │   │   └── FilesPage.tsx
+│   │   ├── components/
+│   │   │   ├── Sidebar.tsx
+│   │   │   ├── Chat/                 # Chat specific components
+│   │   │   │   ├── MessageList.tsx
+│   │   │   │   ├── ThoughtChain.tsx
+│   │   │   │   └── InputArea.tsx
+│   │   └── ...
 ├── docs/
-│   └── system_design.md          # This file
+│   ├── system_design.md
+│   └── design_v3.md                  # Archived design proposal
 ```

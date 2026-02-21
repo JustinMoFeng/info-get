@@ -56,6 +56,8 @@ def ingest_url(request: schemas.IngestURLRequest, db: Session = Depends(get_db),
         # Save to VectorStore with metadata
         if svcs.vector_store:
             svcs.vector_store.add_documents(docs)
+        else:
+            raise HTTPException(status_code=500, detail="Vector store not initialized. Check configuration.")
             
         return {"message": "URL ingested successfully", "doc_id": db_doc.id, "length": len(content), "chunks": len(docs)}
     except Exception as e:
@@ -106,6 +108,8 @@ async def ingest_file(file: UploadFile = File(...), db: Session = Depends(get_db
         # Save to VectorStore
         if svcs.vector_store:
             svcs.vector_store.add_documents(docs)
+        else:
+            raise HTTPException(status_code=500, detail="Vector store not initialized. Check configuration.")
             
         return {"message": "File ingested successfully", "doc_id": db_doc.id, "length": len(content), "chunks": len(docs)}
     except Exception as e:
